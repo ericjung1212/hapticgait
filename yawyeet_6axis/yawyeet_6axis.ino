@@ -1,32 +1,3 @@
-// I2C device class (I2Cdev) demonstration Arduino sketch for MPU6050 class using DMP (MotionApps v2.0)
-// 6/21/2012 by Jeff Rowberg <jeff@rowberg.net>
-// Updates should (hopefully) always be available at https://github.com/jrowberg/i2cdevlib
-//
-// Changelog:
-//    2019-10-01: Made OUTPUT_YAWYEET def
-/* ============================================
-I2Cdev device library code is placed under the MIT license
-Copyright (c) 2012 Jeff Rowberg
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-===============================================
-*/
 
 // I2Cdev and MPU6050 must be installed as libraries, or else the .cpp/.h files
 // for both classes must be in the include path of your project
@@ -41,70 +12,17 @@ THE SOFTWARE.
     #include "Wire.h"
 #endif
 
-// class default I2C address is 0x68
-// specific I2C addresses may be passed as a parameter here
-// AD0 low = 0x68 (default for SparkFun breakout and InvenSense evaluation board)
-// AD0 high = 0x69
-MPU6050 mpu;
-//MPU6050 mpu(0x69); // <-- use for AD0 high
 
-/* =========================================================================
-   NOTE: In addition to connection 3.3v, GND, SDA, and SCL, this sketch
-   depends on the MPU-6050's INT pin being connected to the Arduino's
-   external interrupt #0 pin. On the Arduino Uno and Mega 2560, this is
-   digital I/O pin 2.
- * ========================================================================= */
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+RF24 radio(2, 10); // CE, CSN
+const byte address[6] = "00001";
 
-/* =========================================================================
-   NOTE: Arduino v1.0.1 with the Leonardo board generates a compile error
-   when using Serial.write(buf, len). The Teapot output uses this method.
-   The solution requires a modification to the Arduino USBAPI.h file, which
-   is fortunately simple, but annoying. This will be fixed in the next IDE
-   release. For more info, see these links:
-
-   http://arduino.cc/forum/index.php/topic,109987.0.html
-   http://code.google.com/p/arduino/issues/detail?id=958
- * ========================================================================= */
-
-
-
-// uncomment "OUTPUT_READABLE_QUATERNION" if you want to see the actual
-// quaternion components in a [w, x, y, z] format (not best for parsing
-// on a remote host such as Processing or something though)
-//#define OUTPUT_READABLE_QUATERNION
-
-// uncomment "OUTPUT_READABLE_EULER" if you want to see Euler angles
-// (in degrees) calculated from the quaternions coming from the FIFO.
-// Note that Euler angles suffer from gimbal lock (for more info, see
-// http://en.wikipedia.org/wiki/Gimbal_lock)
-//#define OUTPUT_READABLE_EULER
-
-// uncomment "OUTPUT_READABLE_YAWPITCHROLL" if you want to see the yaw/
-// pitch/roll angles (in degrees) calculated from the quaternions coming
-// from the FIFO. Note this also requires gravity vector calculations.
-// Also note that yaw/pitch/roll angles suffer from gimbal lock (for
-// more info, see: http://en.wikipedia.org/wiki/Gimbal_lock)
-//#define OUTPUT_READABLE_YAWPITCHROLL
-
-// uncomment "OUTPUT_READABLE_REALACCEL" if you want to see acceleration
-// components with gravity removed. This acceleration reference frame is
-// not compensated for orientation, so +X is always +X according to the
-// sensor, just without the effects of gravity. If you want acceleration
-// compensated for orientation, us OUTPUT_READABLE_WORLDACCEL instead.
-//#define OUTPUT_READABLE_REALACCEL
-
-// uncomment "OUTPUT_READABLE_WORLDACCEL" if you want to see acceleration
-// components with gravity removed and adjusted for the world frame of
-// reference (yaw is relative to initial orientation, since no magnetometer
-// is present in this case). Could be quite handy in some cases.
-//#define OUTPUT_READABLE_WORLDACCEL
-
-// uncomment "OUTPUT_TEAPOT" if you want output that matches the
-// format used for the InvenSense teapot demo
-//#define OUTPUT_TEAPOT
+MPU6050 mpu(0x68);
+MPU6050 mpu2(0x69);
 
 #define OUTPUT_YAWYEET
-
 
 #define LED_PIN 13 // (Arduino is 13, Teensy is 11, Teensy++ is 6)
 bool blinkState = false;
@@ -117,7 +35,15 @@ uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 
-// orientation/motion vars
+// MPU control/status vars (mpu2)
+bool dmpReady2 = false;  // set true if DMP init was successful
+uint8_t mpuIntStatus2;   // holds actual interrupt status byte from MPU
+uint8_t devStatus2;      // return status after each device operation (0 = success, !0 = error)
+uint16_t packetSize2;    // expected DMP packet size (default is 42 bytes)
+uint16_t fifoCount2;     // count of all bytes currently in FIFO
+uint8_t fifoBuffer2[64]; // FIFO storage buffer
+
+// orientation/motion vars (mpu1)
 Quaternion q;           // [w, x, y, z]         quaternion container
 VectorInt16 aa;         // [x, y, z]            accel sensor measurements
 VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
@@ -126,17 +52,18 @@ VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
+// orientation/motion vars (mpu2)
+Quaternion q2;           // [w, x, y, z]         quaternion container
+VectorInt16 aa2;         // [x, y, z]            accel sensor measurements
+VectorInt16 aaReal2;     // [x, y, z]            gravity-free accel sensor measurements
+VectorInt16 aaWorld2;    // [x, y, z]            world-frame accel sensor measurements
+VectorFloat gravity2;    // [x, y, z]            gravity vector
+float euler2[3];         // [psi, theta, phi]    Euler angle container
+float ypr2[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
 
-int buffersize=1000;     //Amount of readings used to average, make it higher to get more precision but sketch will be slower  (default:1000)
-int acel_deadzone=5;     //Acelerometer error allowed, make it lower to get more precision, but sketch may not converge  (default:8)
-int giro_deadzone=1;     //Giro error allowed, make it lower to get more precision, but sketch may not converge  (default:1)
-
-int16_t ax, ay, az,gx, gy, gz;
-
-int mean_ax,mean_ay,mean_az,mean_gx,mean_gy,mean_gz,state=0;
-int ax_offset,ay_offset,az_offset,gx_offset,gy_offset,gz_offset;
 
 
 // ================================================================
@@ -148,6 +75,11 @@ void dmpDataReady() {
     mpuInterrupt = true;
 }
 
+volatile bool mpuInterrupt2 = false;
+void dmpDataReady2() {
+  mpuInterrupt2 = true;
+}
+
 
 
 // ================================================================
@@ -155,6 +87,13 @@ void dmpDataReady() {
 // ================================================================
 
 void setup() {
+
+    radio.begin();
+    radio.openWritingPipe(address);
+    radio.setPALevel(RF24_PA_MIN);
+    radio.stopListening();
+    Serial.begin(115200);
+    
     // join I2C bus (I2Cdev library doesn't do this automatically)
     #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
         Wire.begin();
@@ -163,24 +102,21 @@ void setup() {
         Fastwire::setup(400, true);
     #endif
 
-    // initialize serial communication
-    // (115200 chosen because it is required for Teapot Demo output, but it's
-    // really up to you depending on your project)
-    Serial.begin(115200);
-    while (!Serial); // wait for Leonardo enumeration, others continue immediately
-    // NOTE: 8MHz or slower host processors, like the Teensy @ 3.3v or Ardunio
-    // Pro Mini running at 3.3v, cannot handle this baud rate reliably due to
-    // the baud timing being too misaligned with processor ticks. You must use
-    // 38400 or slower in these cases, or use some kind of external separate
-    // crystal solution for the UART timer.
+
+    while (!Serial); 
 
     // initialize device
     Serial.println(F("Initializing I2C devices..."));
     mpu.initialize();
+    mpu2.initialize();
 
-    // verify connection
+    // verify connection for mpu1
     Serial.println(F("Testing device connections..."));
     Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
+
+    // verify connection for mpu2
+    Serial.println(F("Testing device connections..."));
+    Serial.println(mpu2.testConnection() ? F("MPU6050 connection successful (mpu2)") : F("MPU6050 connection failed (mpu2)"));
 
     // wait for ready
     //Serial.println(F("\nSend any character to begin DMP programming and demo: "));
@@ -192,6 +128,10 @@ void setup() {
     Serial.println(F("Initializing DMP..."));
     devStatus = mpu.dmpInitialize();
 
+    // load and configure the DMP (mpu2)
+    Serial.println(F("Initializing DMP..."));
+    devStatus2 = mpu2.dmpInitialize();
+
     // supply your own gyro offsets here, scaled for min sensitivity
     mpu.setXGyroOffset(-54);
     mpu.setYGyroOffset(10);
@@ -201,6 +141,13 @@ void setup() {
     mpu.setYAccelOffset(-492);
     //Your offsets:  1271  -488  2632  -53 11  4
     //Data is printed as: acelX acelY acelZ giroX giroY giroZ
+
+    mpu2.setXGyroOffset(-54);
+    mpu2.setYGyroOffset(10);
+    mpu2.setZGyroOffset(4);
+    mpu2.setZAccelOffset(2633);
+    mpu2.setXAccelOffset(1270);
+    mpu2.setYAccelOffset(-492);
 
     // make sure it worked (returns 0 if so)
     if (devStatus == 0) {
@@ -226,6 +173,33 @@ void setup() {
         // (if it's going to break, usually the code will be 1)
         Serial.print(F("DMP Initialization failed (code "));
         Serial.print(devStatus);
+        Serial.println(F(")"));
+    }
+
+    // make sure it worked (returns 0 if so) (mpu2)
+    if (devStatus2 == 0) {
+        // turn on the DMP, now that it's ready
+        Serial.println(F("Enabling DMP..."));
+        mpu2.setDMPEnabled(true);
+
+        // enable Arduino interrupt detection
+        Serial.println(F("Enabling interrupt detection (Arduino external interrupt 0)..."));
+        attachInterrupt(0, dmpDataReady2, RISING);
+        mpuIntStatus2 = mpu2.getIntStatus();
+
+        // set our DMP Ready flag so the main loop() function knows it's okay to use it
+        Serial.println(F("DMP ready! Waiting for first interrupt..."));
+        dmpReady2 = true;
+
+        // get expected DMP packet size for later comparison
+        packetSize2 = mpu2.dmpGetFIFOPacketSize();
+    } else {
+        // ERROR!
+        // 1 = initial memory load failed
+        // 2 = DMP configuration updates failed
+        // (if it's going to break, usually the code will be 1)
+        Serial.print(F("DMP Initialization failed (mpu2) (code "));
+        Serial.print(devStatus2);
         Serial.println(F(")"));
     }
 
@@ -255,6 +229,13 @@ void loop() {
         // .
         // .
         // .
+
+        int r1 = random(100);
+        int r2 = random(100);
+        int r3 = random(100);
+        int r4 = random(100);
+        const char text[] = {'1', '2', '3', '4', '5', '6'};
+        Serial.print(radio.write(&text, sizeof(text)));
     }
 
     // reset interrupt flag and get INT_STATUS byte
@@ -388,17 +369,7 @@ void loop() {
         // blink LED to indicate activity
         blinkState = !blinkState;
         digitalWrite(LED_PIN, blinkState);
+
+        
     }
-}
-
-
-
-void setOffsets(){
-  accelgyro.setXAccelOffset(0);
-  accelgyro.setYAccelOffset(0);
-  accelgyro.setZAccelOffset(0);
-  accelgyro.setXGyroOffset(0);
-  accelgyro.setYGyroOffset(0);
-  accelgyro.setZGyroOffset(0);
-  
 }
